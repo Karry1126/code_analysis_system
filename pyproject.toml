@@ -7,7 +7,9 @@ authors = [
     { name = "karry", email = "1033588792@qq.com" }
 ]
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "openai>=3.14.1",
+]
 
 [project.scripts]
 code-analysis-system = "code_analysis_system:main"
