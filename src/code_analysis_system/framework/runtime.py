@@ -177,8 +177,7 @@ class AgentRuntime:
                 for tool_call in tool_calls:
                     tool_name = tool_call.function.name
                     raw_arguments = tool_call.function.arguments
-                    print(f"\n[循环 {loop_index}] 模型选择工具：{tool_name}")
-                    print(f"[工具参数] {raw_arguments}")
+                    print(f"\n[循环 {loop_index}] 模型选择工具：{tool_name} [工具参数] {raw_arguments}")
 
                     executed_tool_name, tool_result = self.tool_registry.execute_tool_call(tool_call)
                     self.update_state_from_tool_result(
