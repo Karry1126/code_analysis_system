@@ -19,6 +19,11 @@ MAX_AGENT_LOOPS = 10
 # 单条 tool 结果写入 MessageStore 前的硬顶（字符）。
 # MessageStore.trim 不负责吞掉「当前这一块」超大结果。
 MAX_TOOL_RESULT_CHARS = 12_000
+MAX_SEARCH_MATCHES = 50
+MAX_LIST_ITEMS = 80
+MAX_FILENAME_MATCHES = 40
+MAX_READ_LINES = 200
+READ_PREVIEW_LINES = 40
 
 def get_api_key() -> str:
     """读取 API Key。"""
