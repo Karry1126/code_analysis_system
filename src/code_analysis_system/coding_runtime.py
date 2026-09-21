@@ -59,7 +59,6 @@ class CodingAgentRuntime(AgentRuntime):
                 f"- COMPANY_CODE_REPO_PATH: {state.get('shared_context', {}).get('COMPANY_CODE_REPO_PATH')!r}\n"
                 f"- shared_context: {json.dumps(state.get('shared_context', {}), ensure_ascii=False)}\n"
                 f"- last_tool_name: {state.get('last_tool_name')!r}\n"
-                f"- last_tool_result: {json.dumps(state.get('last_tool_result'), ensure_ascii=False)}\n"
                 f"- completed: {state.get('completed')!r}\n"
                 f"- loop_count: {state.get('loop_count')!r}\n"
                 "你的目标是完成一个小规模、可验证的代码任务。"

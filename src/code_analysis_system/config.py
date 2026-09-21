@@ -16,6 +16,10 @@ COMPANY_CODE_REPO_PATH = (BASE_DIR / COMPANY_CODE_RELATIVE_PATH).resolve()
 MAX_HISTORY_INPUT_TOKENS = 200_000
 MAX_AGENT_LOOPS = 10
 
+# 单条 tool 结果写入 MessageStore 前的硬顶（字符）。
+# MessageStore.trim 不负责吞掉「当前这一块」超大结果。
+MAX_TOOL_RESULT_CHARS = 12_000
+
 def get_api_key() -> str:
     """读取 API Key。"""
     api_key = os.getenv("DEEPSEEK_API_KEY")

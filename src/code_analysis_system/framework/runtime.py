@@ -2,9 +2,59 @@ import json
 from typing import Any
 from icecream import ic
 
+from ..config import MAX_TOOL_RESULT_CHARS
 from .message_store import MessageStore
 from .tool_registry import ToolRegistry
 from .llm import call_llm
+
+
+def compact_tool_result(
+    tool_result: dict[str, Any],
+    max_chars: int = MAX_TOOL_RESULT_CHARS,
+) -> dict[str, Any]:
+    """把过大的工具结果压到硬顶以内，再写入 MessageStore。"""
+
+    def payload_size(payload: dict[str, Any]) -> int:
+        return len(json.dumps(payload, ensure_ascii=False, default=str))
+
+    if payload_size(tool_result) <= max_chars:
+        return tool_result
+
+    compacted = dict(tool_result)
+    compacted["truncated"] = True
+
+    for list_key in ("matches", "items"):
+        value = compacted.get(list_key)
+        if not isinstance(value, list) or not value:
+            continue
+        total = len(value)
+        kept = list(value)
+        while kept and payload_size({**compacted, list_key: kept}) > max_chars:
+            next_size = max(1, len(kept) // 2)
+            if next_size == len(kept):
+                kept = kept[:1]
+                break
+            kept = kept[:next_size]
+        compacted[list_key] = kept
+        compacted[f"{list_key}_omitted"] = total - len(kept)
+
+    content = compacted.get("content")
+    if isinstance(content, str) and payload_size(compacted) > max_chars:
+        keep = max(200, max_chars // 4)
+        compacted["content"] = content[:keep] + "\n... <truncated>"
+        compacted["content_truncated"] = True
+
+    if payload_size(compacted) <= max_chars:
+        return compacted
+
+    return {
+        "ok": compacted.get("ok", True),
+        "truncated": True,
+        "error": "工具结果过长，已截断。请缩小检索范围或按行读取。",
+        "query": compacted.get("query"),
+        "match_count": compacted.get("match_count"),
+        "path": compacted.get("path"),
+    }
 
 
 class AgentRuntime:
@@ -35,7 +85,6 @@ class AgentRuntime:
             "goal": goal,
             "shared_context": {},
             "last_tool_name": None,
-            "last_tool_result": None,
             "completed": False,
             "loop_count": 0,
         }
@@ -81,7 +130,6 @@ class AgentRuntime:
                 f"- goal: {state.get('goal')!r}\n"
                 f"- shared_context: {json.dumps(state.get('shared_context', {}), ensure_ascii=False)}\n"
                 f"- last_tool_name: {state.get('last_tool_name')!r}\n"
-                f"- last_tool_result: {json.dumps(state.get('last_tool_result'), ensure_ascii=False)}\n"
                 f"- completed: {state.get('completed')!r}\n"
                 f"- loop_count: {state.get('loop_count')!r}\n"
                 "如果任务还没完成，就继续调用合适工具；如果任务已完成，就直接自然语言回答。"
@@ -121,7 +169,6 @@ class AgentRuntime:
         这样工具和任务状态之间就有了一个通用通信面。
         """
         state["last_tool_name"] = tool_name
-        state["last_tool_result"] = tool_result
 
         context_updates = tool_result.get("context_updates")
         if isinstance(context_updates, dict):
@@ -180,27 +227,25 @@ class AgentRuntime:
                     print(f"\n[循环 {loop_index}] 模型选择工具：{tool_name} [工具参数] {raw_arguments}")
 
                     executed_tool_name, tool_result = self.tool_registry.execute_tool_call(tool_call)
+                    compacted = compact_tool_result(tool_result)
                     self.update_state_from_tool_result(
                         state=state,
                         tool_name=executed_tool_name,
-                        tool_result=tool_result,
+                        tool_result=compacted,
                     )
                     self.on_tool_result(
                         state=state,
                         tool_name=executed_tool_name,
-                        tool_result=tool_result,
+                        tool_result=compacted,
                         message_store=message_store,
                     )
 
-                    # print(f"[工具结果] {json.dumps(tool_result, ensure_ascii=False)}")
-
-                    # 再把工具真实执行结果回写成 role=tool 的消息。
-                    # 这是 ReAct / tool-calling 闭环里非常关键的一步。
+                    # 再把压缩后的工具结果回写成 role=tool 的消息。
                     message_store.append(
                         {
                             "role": "tool",
                             "tool_call_id": tool_call.id,
-                            "content": json.dumps(tool_result, ensure_ascii=False),
+                            "content": json.dumps(compacted, ensure_ascii=False),
                         }
                     )
 
