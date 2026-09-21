@@ -1,3 +1,4 @@
+import json
 from typing import Any
 
 
@@ -30,13 +31,71 @@ def _split_atomic_blocks(messages: list[dict[str, Any]]) -> list[list[dict[str, 
     return blocks
 
 
+def _flatten_blocks(blocks: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+    for block in blocks:
+        messages.extend(block)
+    return messages
+
+
+def _tool_calls_text(tool_calls: Any) -> str:
+    if not tool_calls:
+        return ""
+
+    parts: list[str] = []
+    for call in tool_calls:
+        if isinstance(call, dict):
+            parts.append(json.dumps(call, ensure_ascii=False, default=str))
+            continue
+
+        function = getattr(call, "function", None)
+        if function is None:
+            parts.append(str(call))
+            continue
+
+        parts.append(str(getattr(function, "name", "") or ""))
+        parts.append(str(getattr(function, "arguments", "") or ""))
+    return "\n".join(parts)
+
+
+def _estimate_message_tokens(message: dict[str, Any]) -> int:
+    """
+    粗估单条消息占用的 token。
+
+    不引入 tokenizer 依赖。对中文和代码按“约 2 字符 = 1 token”
+    做偏保守估计，另加每条消息的角色开销。
+    """
+    content = message.get("content")
+    if content is None:
+        content_text = ""
+    elif isinstance(content, str):
+        content_text = content
+    else:
+        content_text = json.dumps(content, ensure_ascii=False, default=str)
+
+    serialized = "\n".join(
+        [
+            str(message.get("role", "")),
+            content_text,
+            _tool_calls_text(message.get("tool_calls")),
+            str(message.get("tool_call_id", "") or ""),
+            str(message.get("name", "") or ""),
+        ]
+    )
+    return max(1, (len(serialized) + 1) // 2) + 4
+
+
+def _estimate_tokens(messages: list[dict[str, Any]]) -> int:
+    return sum(_estimate_message_tokens(message) for message in messages)
+
+
 class MessageStore:
     """
     管理会话消息和历史裁剪。
     """
 
-    def __init__(self, max_turns: int) -> None:
-        self.max_turns = max_turns
+    def __init__(self, max_input_tokens: int) -> None:
+        self.max_input_tokens = max_input_tokens
         self.messages: list[dict[str, Any]] = []
 
     def append(self, message: dict[str, Any]) -> None:
@@ -53,16 +112,25 @@ class MessageStore:
 
     def trim(self) -> None:
         """
-        按用户轮次裁剪历史，并保证工具调用链完整。
+        按 token 预算裁剪历史，并保证工具调用链完整。
 
-        一轮从一条 user 消息开始，包含其间所有
-        assistant(tool_calls) -> tool -> ... -> assistant。
-        截断时整块保留或整块丢弃，不会把 tool_calls 和 tool result 拆开。
-        当前轮尚未写完的工具结果留在末尾，不会被当成残缺块删掉。
+        先把消息切成原子块：assistant(tool_calls) 和紧随其后的
+        tool 结果视为同一块。从最旧的块开始丢弃，直到剩余消息
+        估测 token 不超过预算。最新一块即使超预算也保留，
+        避免把当前未写完的工具调用链拆开。
         """
-        max_message_count = self.max_turns * 4
-        if len(self.messages) > max_message_count:
-            self.messages = self.messages[-max_message_count:]
+        if not self.messages:
+            return
+
+        blocks = _split_atomic_blocks(self.messages)
+        start = 0
+        while start < len(blocks) - 1:
+            remaining = _flatten_blocks(blocks[start:])
+            if _estimate_tokens(remaining) <= self.max_input_tokens:
+                break
+            start += 1
+
+        self.messages = _flatten_blocks(blocks[start:])
 
     def snapshot(self) -> list[dict[str, Any]]:
         """返回当前消息快照。"""

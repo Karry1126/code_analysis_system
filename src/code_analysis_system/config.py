@@ -11,7 +11,9 @@ if not COMPANY_CODE_RELATIVE_PATH:
 COMPANY_CODE_REPO_PATH = (BASE_DIR / COMPANY_CODE_RELATIVE_PATH).resolve()
 
 # 参数
-MAX_HISTORY_TURNS = 6
+# DeepSeek 上下文约 1M。这里只约束 MessageStore 里的历史，
+# system / tools / 运行时调度消息 / completion 还要另外占额度。
+MAX_HISTORY_INPUT_TOKENS = 200_000
 MAX_AGENT_LOOPS = 10
 
 def get_api_key() -> str:
