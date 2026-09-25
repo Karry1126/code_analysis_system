@@ -2,8 +2,8 @@
 
 query_include_graph 读 include_index.json 的 header_index，
 按 header basename 原样查找，返回引用模块和 include 写法计数。
-list_modules 读 module_cards.json，按 module_type 精确匹配、
-按 module_name 子串过滤，返回模块清单。
+list_modules 读 module_cards.json，返回全部模块的
+module_path、module_name、module_type。
 
 两条索引的路径在 config.py：INCLUDE_INDEX_PATH、MODULE_CARDS_PATH。
 本模块导入时一次性读入内存。文件缺失或 JSON 非法时工具返回 ok=false，不抛异常。
@@ -107,49 +107,30 @@ def query_include_graph(header: str) -> dict[str, Any]:
 
 @tool(
     description=(
-        "List modules from the offline module-card index. "
-        "Filter by exact module_type and/or a case-insensitive module_name substring. "
-        "Pass null to skip a filter. Returns the full matching list with no truncation."
+        "List all modules in the codebase, with their module_path, "
+        "module_name, and module_type. "
+        "Returns the full list with no filtering or truncation."
     ),
-    parameter_descriptions={
-        "module_type": "Exact module_type match. Null means do not filter.",
-        "name_contains": "Case-insensitive substring of module_name. Null means do not filter.",
-    },
 )
-def list_modules(
-    module_type: str | None = None,
-    name_contains: str | None = None,
-) -> dict[str, Any]:
-    """按 module_type 和 module_name 过滤模块卡片，返回完整模块清单。"""
+def list_modules() -> dict[str, Any]:
+    """返回全部模块的 module_path、module_name、module_type。"""
     if _MODULE_CARDS is None:
         return _index_unavailable()
 
-    needle = name_contains.lower() if isinstance(name_contains, str) else None
     modules: list[dict[str, Any]] = []
     for card in _MODULE_CARDS:
         if not isinstance(card, dict):
             continue
-        card_type = card.get("module_type")
-        card_name = card.get("module_name")
-        if module_type is not None and card_type != module_type:
-            continue
-        if needle is not None:
-            if not isinstance(card_name, str) or needle not in card_name.lower():
-                continue
         modules.append(
             {
                 "module_path": card.get("module_path"),
-                "module_name": card_name,
-                "module_type": card_type,
+                "module_name": card.get("module_name"),
+                "module_type": card.get("module_type"),
             }
         )
 
     return {
         "ok": True,
-        "filter": {
-            "module_type": module_type,
-            "name_contains": name_contains,
-        },
         "modules": modules,
         "module_count": len(modules),
     }
