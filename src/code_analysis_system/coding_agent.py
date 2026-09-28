@@ -5,6 +5,7 @@ from .config import MAX_HISTORY_INPUT_TOKENS, COMPANY_CODE_RELATIVE_PATH, get_ap
 from .tools import register_coding_tools
 from .tools_index import register_index_tools
 from .tools_symbol import register_symbol_tools
+from .tools_references import register_reference_tools
 import traceback
 
 
@@ -14,6 +15,7 @@ def main() -> None:
     register_coding_tools(registry)
     register_index_tools(registry)
     register_symbol_tools(registry)
+    register_reference_tools(registry)
 
     # 这里直接复用 .framework 里的 ToolRegistry 和 MessageStore。
     runtime = CodingAgentRuntime(api_key=api_key, tool_registry=registry)

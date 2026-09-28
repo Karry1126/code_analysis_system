@@ -13,6 +13,7 @@ RAG_INDEX_DIR = BASE_DIR / ".rag_index"
 MODULE_CARDS_PATH = (BASE_DIR / "data" / "module_cards.json").resolve()
 INCLUDE_INDEX_PATH = (BASE_DIR / "data" / "include_index.json").resolve()
 SYMBOL_INDEX_PATH = (BASE_DIR / "data" / "symbol_index.json").resolve()
+REFERENCE_INDEX_PATH = (BASE_DIR / "data" / "reference_index.json").resolve()
 
 # 参数
 # DeepSeek 上下文约 1M。这里只约束 MessageStore 里的历史，
