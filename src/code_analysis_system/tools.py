@@ -1,4 +1,4 @@
-import re   #下一步优化删除
+import re   
 from pathlib import Path
 from typing import Any
 
@@ -12,9 +12,8 @@ from .config import (
     READ_PREVIEW_LINES,
     RETRIEVE_TOP_K,
     RETRIEVE_TOP_K_MAX,
-    SNIPPET_MAX_CHARS,  #下一步优化删除
+    SNIPPET_MAX_CHARS,  
 )
-# from .retrieval import retrieve as rag_retrieve
 
 def resolve_safe_path(relative_path: str) -> Path:
     """
@@ -57,7 +56,6 @@ def _normalize_line(value: int | None) -> int | None:
         return None
     return int(value)
 
-#下一步优化删除
 _SKIP_SUFFIXES = {
     ".o",
     ".so",
@@ -74,7 +72,7 @@ _SKIP_SUFFIXES = {
     ".zip",
 }
 
-# 一期宽度入口：中文业务名 -> 路径/符号关键词。二期 RAG 仍走同一张卡片。
+# 一期宽度入口：中文业务名 -> 路径/符号关键词。
 _MODULE_ALIASES: dict[str, list[str]] = {
     "生日礼包": ["birthday_gift", "birthday"],
     "生日": ["birthday"],
@@ -268,7 +266,6 @@ def _retrieve_by_alias_and_grep(query: str, top_k: int) -> list[dict[str, Any]]:
 
     ranked = sorted(cards.values(), key=lambda item: (-item["score"], item["relative_path"]))
     return ranked[:top_k]
-#下一步优化删除
 
 @tool(
     description=(
@@ -551,14 +548,12 @@ def search_files_by_name(name_query: str, relative_dir: str) -> dict[str, Any]:
 )
 def retrieve_code(query: str, top_k: int = RETRIEVE_TOP_K) -> dict[str, Any]:
     """宽度定位：别名 + 有界 grep，返回 Top-K 卡片。二期换成混合检索时保持此 JSON。"""
-    #"""宽度定位：混合检索返回 Top-K 卡片。"""
     cleaned = query.strip()
     if not cleaned:
         return {"ok": False, "error": "query 不能为空。"}
 
     limited = max(1, min(int(top_k), RETRIEVE_TOP_K_MAX))
     matches = _retrieve_by_alias_and_grep(cleaned, limited)
-    #matches = rag_retrieve(cleaned, limited)
     last_retrieve = [
         {
             "relative_path": item["relative_path"],

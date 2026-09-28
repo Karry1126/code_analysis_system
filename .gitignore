@@ -42,6 +42,11 @@ Thumbs.db
 # uv
 uv.lock
 
+# RAG 派生索引
+.rag_index/
+
 test.py
 src/back
 demo_tools.py
+data
+doc
