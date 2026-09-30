@@ -2,7 +2,12 @@
 
 只读 module_cards.json、symbol_index.json 和源码文本，不做 AST / ctags。
 正则、阈值、截断长度、注释规则都在下方 CONFIG 区；抽不到的字段留空，不报错。
-输出 docs 里每条是一个实体：module 或 symbol。
+输出 docs 里每条是一个检索单元：module 子文档或 symbol。
+每个 module 拆成最多三条子文档，各自独立参与检索：
+    module:<path>#meta       元数据头，总是生成
+    module:<path>#comments   中文注释，chinese_comments 非空时生成
+    module:<path>#docs       文档正文，document_text 非空时生成
+三条的 kind 仍是 "module"，module_path 相同，metadata 相同。
 
 用法:
     python build_rag_corpus.py <仓库根> --module-cards <cards.json> --symbol-index <index.json> -o <输出.json>
@@ -57,7 +62,7 @@ CONFIG = {
     "module_comment_max_chars": 5000,
     "symbol_comment_max_chars": 1000,
     "symbol_comment_window": 30,
-    # 含这些字符的源码行不抽中文，避免落到字符串字面量里。
+    # 含这些字符的注释片段不抽中文，避免落到字符串字面量里。整行代码里的引号不连坐。
     "quote_chars": ['"', "'"],
     "comment_rules": {
         "c_like": {
@@ -260,7 +265,7 @@ def _comment_rule_slices(line: str, rule: dict, in_block: bool) -> tuple[list[st
 
 
 def extract_line_chinese(lines: list[str], suffix: str) -> list[list[str]]:
-    """对每一行抽出中文注释片段。含引号的行跳过。返回与 lines 等长的列表（0-based）。"""
+    """对每一行抽出中文注释片段。只跳过自身含引号的注释片段。返回与 lines 等长的列表（0-based）。"""
     rule = _comment_rule_for_suffix(suffix)
     per_line: list[list[str]] = [[] for _ in lines]
     if rule is None:
@@ -269,10 +274,10 @@ def extract_line_chinese(lines: list[str], suffix: str) -> list[list[str]]:
     in_block = False
     for index, raw in enumerate(lines):
         slices, in_block = _comment_rule_slices(raw, rule, in_block)
-        if _line_has_quotes(raw):
-            continue
         fragments: list[str] = []
         for slice_text in slices:
+            if _line_has_quotes(slice_text):
+                continue
             fragments.extend(_chinese_fragments(slice_text))
         per_line[index] = fragments
     return per_line
@@ -368,7 +373,36 @@ def module_chinese_comments(source_paths: list[Path]) -> str:
     return unique_join(fragments, CONFIG["module_comment_max_chars"])
 
 
-def build_module_text(card: dict, extra_key_files: list[str], document_text: str, chinese: str) -> str:
+_MODULE_PART_ORDER = {"meta": 0, "comments": 1, "docs": 2}
+
+
+def _module_metadata(card: dict) -> dict:
+    fields = CONFIG["card_fields"]
+    module_name = card.get(fields["module_name"])
+    module_type = card.get(fields["module_type"])
+    config_files = card.get(fields["config_files"]) or []
+    doc_files = card.get(fields["doc_files"]) or []
+    return {
+        "module_name": module_name if isinstance(module_name, str) else None,
+        "module_type": module_type if module_type is not None else None,
+        "config_files": list(config_files) if isinstance(config_files, list) else [],
+        "doc_files": list(doc_files) if isinstance(doc_files, list) else [],
+    }
+
+
+def _module_doc_sort_key(item: dict) -> tuple:
+    doc_id = item.get("doc_id") or ""
+    suffix = doc_id.rsplit("#", 1)[-1] if isinstance(doc_id, str) and "#" in doc_id else ""
+    return (item.get("module_path") or "", _MODULE_PART_ORDER.get(suffix, 9))
+
+
+def build_module_text(
+    card: dict,
+    extra_key_files: list[str],
+    document_text: str,
+    chinese: str,
+) -> list[tuple[str, str]]:
+    """拆成最多三条子文档，返回 (后缀, 正文)。后缀为 meta / comments / docs。"""
     fields = CONFIG["card_fields"]
     module_path = display(card.get(fields["module_path"]))
     module_name = display(card.get(fields["module_name"]))
@@ -382,7 +416,7 @@ def build_module_text(card: dict, extra_key_files: list[str], document_text: str
             key_files.append(item)
     config_files = card.get(fields["config_files"]) or []
     doc_files = card.get(fields["doc_files"]) or []
-    parts = [
+    meta = "\n".join([
         f"[module] {module_path}",
         f"module_name: {module_name}",
         f"module_type: {module_type}",
@@ -390,14 +424,13 @@ def build_module_text(card: dict, extra_key_files: list[str], document_text: str
         f"key_files: {join_file_list(key_files)}",
         f"config_files: {join_file_list(config_files)}",
         f"doc_files: {join_file_list(doc_files)}",
-        "",
-        "document_text:",
-        document_text,
-        "",
-        "chinese_comments:",
-        chinese,
-    ]
-    return "\n".join(parts)
+    ])
+    pieces: list[tuple[str, str]] = [("meta", meta)]
+    if chinese:
+        pieces.append(("comments", f"[module-comments] {module_path}\n{chinese}"))
+    if document_text:
+        pieces.append(("docs", f"[module-docs] {module_path}\n{document_text}"))
+    return pieces
 
 
 def build_module_docs(repo_root: Path, cards: list) -> tuple[list[dict], int]:
@@ -420,20 +453,15 @@ def build_module_docs(repo_root: Path, cards: list) -> tuple[list[dict], int]:
         chinese = module_chinese_comments(source_paths) if _is_dir(module_dir) else ""
         if chinese:
             with_chinese += 1
-        text = build_module_text(card, extra_key_files, document_text, chinese)
-        docs.append({
-            "doc_id": f"module:{module_path}",
-            "kind": "module",
-            "module_path": module_path,
-            "text": text,
-            "metadata": {
-                "module_name": card.get(fields["module_name"]) if isinstance(card.get(fields["module_name"]), str) else None,
-                "module_type": card.get(fields["module_type"]) if card.get(fields["module_type"]) is not None else None,
-                "config_files": list(card.get(fields["config_files"]) or []) if isinstance(card.get(fields["config_files"]), list) else [],
-                "doc_files": list(card.get(fields["doc_files"]) or []) if isinstance(card.get(fields["doc_files"]), list) else [],
-            },
-        })
-    docs.sort(key=lambda item: item.get("module_path") or "")
+        for suffix, text in build_module_text(card, extra_key_files, document_text, chinese):
+            docs.append({
+                "doc_id": f"module:{module_path}#{suffix}",
+                "kind": "module",
+                "module_path": module_path,
+                "text": text,
+                "metadata": _module_metadata(card),
+            })
+    docs.sort(key=_module_doc_sort_key)
     return docs, with_chinese
 
 
@@ -565,6 +593,9 @@ def build_corpus(repo_root: Path, cards: list, index: dict) -> tuple[dict, dict]
     }
     stats = {
         "module_docs": len(module_docs),
+        "module_meta_docs": _count_doc_suffix(module_docs, "meta"),
+        "module_comments_docs": _count_doc_suffix(module_docs, "comments"),
+        "module_document_docs": _count_doc_suffix(module_docs, "docs"),
         "symbol_docs": len(symbol_docs),
         "total_docs": len(docs),
         "module_with_chinese": module_with_chinese,
@@ -585,8 +616,16 @@ def write_corpus(payload: dict, output: Path) -> None:
         handle.write("\n")
 
 
+def _count_doc_suffix(docs: list[dict], suffix: str) -> int:
+    marker = f"#{suffix}"
+    return sum(1 for item in docs if str(item.get("doc_id") or "").endswith(marker))
+
+
 def print_stats(stats: dict) -> None:
     print(f"module 文档数: {stats['module_docs']}")
+    print(f"#meta 文档数: {stats['module_meta_docs']}")
+    print(f"#comments 文档数: {stats['module_comments_docs']}")
+    print(f"#docs 文档数: {stats['module_document_docs']}")
     print(f"symbol 文档数: {stats['symbol_docs']}")
     print(f"总文档数: {stats['total_docs']}")
     print(f"有 chinese_comments 的 module 数量: {stats['module_with_chinese']}")

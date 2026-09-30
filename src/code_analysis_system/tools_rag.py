@@ -265,6 +265,10 @@ def _sparse_retrieve(query: str, bundle: RagIndex) -> list[dict]:
     tokenized_question = tokenize_mixed(query)
     scores = bundle.bm25.get_scores(tokenized_question)
     top_k = sorted(range(len(scores)), key=lambda i : scores[i], reverse=True)[:RETRIEVER_K]
+    for rank, idx in enumerate(top_k, 1):
+        rec = bundle.records[idx]
+        if rec.metadata.get("kind") == "module":
+            print(f"[BM25 rank {rank}] {rec.metadata['doc_id']}")
     return [
         {
             "doc":bundle.records[idx],
@@ -275,6 +279,9 @@ def _sparse_retrieve(query: str, bundle: RagIndex) -> list[dict]:
 
 def _dense_retrieve(query: str, bundle: RagIndex) -> list[dict]:
     docs_with_scores = bundle.faiss_index.similarity_search_with_score(query, k=RETRIEVER_K)
+    for rank, (doc, _score) in enumerate(docs_with_scores, 1):
+        if doc.metadata.get("kind") == "module":
+            print(f"[FAISS rank {rank}] {doc.metadata['doc_id']}")
     return [
         {
             "doc": doc,
@@ -328,14 +335,22 @@ def _hybrid_search(query: str, top_k: int, bundle: RagIndex) -> dict[str, Any]:
     rrf_resutl = reciprocal_rank_fusion([bm25_hits, faiss_hits])
     selected = rrf_resutl[: max(top_k, 0)]
 
-    modules: list[dict[str, Any]] = []
+    seen_modules: dict[str, dict[str, Any]] = {}
     symbols: list[dict[str, Any]] = []
     for item in selected:
         kind = item["doc"].metadata.get("kind")
         if kind == "module":
-            modules.append(_module_candidate(item["doc"], item["rrf_score"]))
+            mp = item["doc"].metadata.get("module_path")
+            if not mp:
+                continue
+            candidate = _module_candidate(item["doc"], item["rrf_score"])
+            prev = seen_modules.get(mp)
+            if prev is None or candidate["score"] > prev["score"]:
+                seen_modules[mp] = candidate
         elif kind == "symbol":
             symbols.append(_symbol_candidate(item["doc"], item["rrf_score"]))
+
+    modules = sorted(seen_modules.values(), key=lambda x: x["score"], reverse=True)
 
     return {
         "ok": True,
@@ -348,6 +363,8 @@ def _hybrid_search(query: str, top_k: int, bundle: RagIndex) -> dict[str, Any]:
             "bm25_hits": len(bm25_hits),
             "faiss_hits": len(faiss_hits),
             "fused_count": len(rrf_resutl),
+            "module_candidates": len(modules),
+            "symbol_candidates": len(symbols),
         },
     }
 
