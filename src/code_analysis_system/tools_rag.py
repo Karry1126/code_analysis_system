@@ -1,8 +1,11 @@
 """术语解析工具：resolve_term。
 
-用 BM25 + FAISS 混合检索，RRF 融合后返回模块/符号候选，不调用 LLM。
+用分类型独立索引做混合检索：module 与 symbol 各有一套 BM25 和一套 FAISS。
+两侧分别召回、分别做 RRF，再按配额合并为模块/符号候选，不调用 LLM。
 索引目录在 config.py 的 RAG_INDEX_DIR。
-文件名：docs.pkl、bm25_corpus.pkl、faiss.index。
+分类型文件：bm25_module_corpus.pkl、bm25_symbol_corpus.pkl、
+docs_module.pkl、docs_symbol.pkl、faiss_module/、faiss_symbol/。
+旧混检路径常量仍保留，不参与加载；签名变化后会自动重建分类型索引。
 模型名、正则、k 值在下方 CONFIG 区。
 本模块导入时一次性加载。文件缺失或依赖不可用时工具返回 ok=false，不抛异常。
 """
@@ -43,7 +46,14 @@ FAISS_INDEX_PATH = RAG_INDEX_DIR / "index.faiss"
 FAISS_DOCSTORE_PATH = RAG_INDEX_DIR / "index.pkl"
 DOCS_PATH = RAG_INDEX_DIR / "docs.pkl"
 
-RETRIEVER_K = 50
+BM25_MODULE_CORPUS_PATH = RAG_INDEX_DIR / "bm25_module_corpus.pkl"
+BM25_SYMBOL_CORPUS_PATH = RAG_INDEX_DIR / "bm25_symbol_corpus.pkl"
+FAISS_MODULE_DIR = RAG_INDEX_DIR / "faiss_module"
+FAISS_SYMBOL_DIR = RAG_INDEX_DIR / "faiss_symbol"
+DOCS_MODULE_PATH = RAG_INDEX_DIR / "docs_module.pkl"
+DOCS_SYMBOL_PATH = RAG_INDEX_DIR / "docs_symbol.pkl"
+
+PER_SIDE_K = 20  # 每侧每路召回条数
 RRF_K = 60
 SCORE_DECIMALS = 4
 DEFAULT_TOP_K = 10
@@ -65,10 +75,12 @@ def tokenize_mixed(text: str) -> list[str]:
 
 @dataclass
 class RagIndex:
-    records: list[LCDocument]
-    bm25: Any
-    faiss_index: Any
-    # model: Any
+    module_records: list[LCDocument]
+    symbol_records: list[LCDocument]
+    bm25_module: Any
+    bm25_symbol: Any
+    faiss_module: Any
+    faiss_symbol: Any
 
 def _gen_signature()-> dict:
     with open(RAG_CORPUS_PATH, "r", encoding="utf-8") as f:
@@ -79,6 +91,7 @@ def _gen_signature()-> dict:
         "english_token_pattern": ENGLISH_TOKEN_PATTERN,
         "chinese_token_pattern": CHINESE_TOKEN_PATTERN,
         "camel_split_pattern": CAMEL_SPLIT_PATTERN,
+        "index_layout": "split_by_kind_v1",
     }
 
 def _load_signature() -> dict | None:
@@ -98,10 +111,12 @@ def _is_document_list(payload: object) -> bool:
 def _judge_can_reload(sign: dict) -> bool:
     return (
         sign == _load_signature()
-        and os.path.exists(BM25_CORPUS_PATH)
-        and os.path.exists(FAISS_INDEX_PATH)
-        and os.path.exists(FAISS_DOCSTORE_PATH)
-        and os.path.exists(DOCS_PATH)
+        and os.path.exists(BM25_MODULE_CORPUS_PATH)
+        and os.path.exists(BM25_SYMBOL_CORPUS_PATH)
+        and os.path.exists(DOCS_MODULE_PATH)
+        and os.path.exists(DOCS_SYMBOL_PATH)
+        and os.path.exists(FAISS_MODULE_DIR / "index.faiss")
+        and os.path.exists(FAISS_SYMBOL_DIR / "index.faiss")
     )
 
 def _load_corpus_docs(corpus_path: Path) -> list[dict] | None:
@@ -139,6 +154,18 @@ def build_records(raw_docs: list[dict]) -> list[LCDocument]:
             continue
         records.append(to_internal_record(doc))
     return records
+
+def split_records_by_kind(records: list[LCDocument]) -> tuple[list[LCDocument], list[LCDocument]]:
+    """按 metadata['kind'] 拆分为 (module_records, symbol_records)。"""
+    module_records: list[LCDocument] = []
+    symbol_records: list[LCDocument] = []
+    for record in records:
+        kind = record.metadata.get("kind")
+        if kind == "module":
+            module_records.append(record)
+        elif kind == "symbol":
+            symbol_records.append(record)
+    return module_records, symbol_records
 
 def build_bm25_corpus(records: list[LCDocument]) -> list[list[str]]:
     return [tokenize_mixed(str(record.page_content or "")) for record in records]
@@ -186,70 +213,114 @@ def build_faiss_index(
         metadatas=metadatas,
     )
 
+def build_split_indexes(
+    records: list[LCDocument],
+    embeddings_model: OllamaEmbeddings,
+) -> RagIndex:
+    module_records, symbol_records = split_records_by_kind(records)
+
+    # BM25 module
+    module_corpus = build_bm25_corpus(module_records)
+    bm25_module = BM25Okapi(module_corpus)
+    write_pickle(module_corpus, BM25_MODULE_CORPUS_PATH)
+
+    # BM25 symbol
+    symbol_corpus = build_bm25_corpus(symbol_records)
+    bm25_symbol = BM25Okapi(symbol_corpus)
+    write_pickle(symbol_corpus, BM25_SYMBOL_CORPUS_PATH)
+
+    # FAISS module
+    faiss_module = build_faiss_index(module_records, embeddings_model)
+    FAISS_MODULE_DIR.mkdir(parents=True, exist_ok=True)
+    faiss_module.save_local(FAISS_MODULE_DIR)
+
+    # FAISS symbol
+    faiss_symbol = build_faiss_index(symbol_records, embeddings_model)
+    FAISS_SYMBOL_DIR.mkdir(parents=True, exist_ok=True)
+    faiss_symbol.save_local(FAISS_SYMBOL_DIR)
+
+    # docs
+    write_pickle(module_records, DOCS_MODULE_PATH)
+    write_pickle(symbol_records, DOCS_SYMBOL_PATH)
+
+    return RagIndex(
+        module_records=module_records,
+        symbol_records=symbol_records,
+        bm25_module=bm25_module,
+        bm25_symbol=bm25_symbol,
+        faiss_module=faiss_module,
+        faiss_symbol=faiss_symbol,
+    )
+
+def load_split_indexes(embeddings_model: OllamaEmbeddings) -> RagIndex | None:
+    try:
+        with BM25_MODULE_CORPUS_PATH.open("rb") as handle:
+            module_corpus = pickle.load(handle)
+        with BM25_SYMBOL_CORPUS_PATH.open("rb") as handle:
+            symbol_corpus = pickle.load(handle)
+        with DOCS_MODULE_PATH.open("rb") as handle:
+            module_records = pickle.load(handle)
+        with DOCS_SYMBOL_PATH.open("rb") as handle:
+            symbol_records = pickle.load(handle)
+
+        if not _is_document_list(module_records):
+            return None
+        if not _is_document_list(symbol_records):
+            return None
+        if len(module_corpus) != len(module_records):
+            print("module BM25 语料与 docs 条数不一致")
+            return None
+        if len(symbol_corpus) != len(symbol_records):
+            print("symbol BM25 语料与 docs 条数不一致")
+            return None
+
+        faiss_module = FAISS.load_local(
+            FAISS_MODULE_DIR, embeddings_model, allow_dangerous_deserialization=True
+        )
+        faiss_symbol = FAISS.load_local(
+            FAISS_SYMBOL_DIR, embeddings_model, allow_dangerous_deserialization=True
+        )
+        return RagIndex(
+            module_records=module_records,
+            symbol_records=symbol_records,
+            bm25_module=BM25Okapi(module_corpus),
+            bm25_symbol=BM25Okapi(symbol_corpus),
+            faiss_module=faiss_module,
+            faiss_symbol=faiss_symbol,
+        )
+    except Exception:
+        traceback.print_exc()
+        return None
+
 def _load_rag_index() -> RagIndex | None:
     try:
         embeddings_model = OllamaEmbeddings(model=EMBEDDING_MODEL_NAME)
         sign = _gen_signature()
-        reload_flag = _judge_can_reload(sign)
-        if True == reload_flag: #重启流程   
-            with BM25_CORPUS_PATH.open("rb") as handle:
-                tokenized_corpus = pickle.load(handle)
-            if not isinstance(tokenized_corpus, list):
-                return None
-            bm25 = BM25Okapi(tokenized_corpus)
+        if _judge_can_reload(sign):
+            loaded = load_split_indexes(embeddings_model)
+            if loaded is not None:
+                print("reload split rag index success")
+                print(f"  module records: {len(loaded.module_records)}")
+                print(f"  symbol records: {len(loaded.symbol_records)}")
+            return loaded
 
-            with DOCS_PATH.open("rb") as handle:
-                records = pickle.load(handle)
-            if not _is_document_list(records):
-                return None
-            if len(tokenized_corpus) != len(records):
-                print("BM25 语料与 docs.pkl 条数不一致，放弃 reload")
-                return None
+        # 初始化流程
+        raw_docs = _load_corpus_docs(RAG_CORPUS_PATH)
+        if raw_docs is None:
+            print(f"无法读取语料: {RAG_CORPUS_PATH}")
+            return None
+        records = build_records(raw_docs)
+        print(f"内部记录数: {len(records)}")
+        if not records:
+            return None
 
-            vectorstore = FAISS.load_local(
-                RAG_INDEX_DIR,
-                embeddings_model,
-                allow_dangerous_deserialization=True,
-            )
-            print("reload local rag index success")
-            return RagIndex(
-                records=records,
-                bm25=bm25,
-                faiss_index=vectorstore
-            )
-        else:   #初始化流程
-            raw_docs = _load_corpus_docs(RAG_CORPUS_PATH)
-            if raw_docs is None:
-                print(f"无法读取语料，或顶层缺少 docs 列表: {RAG_CORPUS_PATH}")
-                return None
-            records = build_records(raw_docs)
-            print(f"内部记录数: {len(records)}")
+        t0 = time.perf_counter()
+        index = build_split_indexes(records, embeddings_model)
+        t1 = time.perf_counter()
+        print(f"分类型索引构建完成，耗时 {t1-t0:.2f}s")
 
-            t0 = time.perf_counter()
-            tokenized_corpus = build_bm25_corpus(records)
-            bm25 = BM25Okapi(tokenized_corpus)
-            write_pickle(tokenized_corpus, BM25_CORPUS_PATH)
-            t1 = time.perf_counter()
-            print(f"已写入 {BM25_CORPUS_PATH} 耗时:{t1-t0}")
-
-            # vectorstore = FAISS.from_documents(records, embeddings_model)
-            if not records:
-                print("语料为空，跳过 FAISS 构建")
-                return None
-            vectorstore = build_faiss_index(records, embeddings_model)
-            vectorstore.save_local(RAG_INDEX_DIR)
-            t2 = time.perf_counter()
-            print(f"已写入 {FAISS_INDEX_PATH} 耗时:{t2-t1}")
-
-            write_json(sign, INDEX_SIGNATURE_PATH)
-            write_pickle(records, DOCS_PATH)
-            print(f"已写入 {INDEX_SIGNATURE_PATH} {DOCS_PATH}")
-
-            return RagIndex(
-                records=records,
-                bm25=bm25,
-                faiss_index=vectorstore
-            )
+        write_json(sign, INDEX_SIGNATURE_PATH)
+        return index
 
     except Exception as exc:
         traceback.print_exc()
@@ -261,51 +332,53 @@ _RAG_INDEX = _load_rag_index()
 def _index_unavailable() -> dict[str, Any]:
     return {"ok": False, "error": "index not available"}
 
-def _sparse_retrieve(query: str, bundle: RagIndex) -> list[dict]:
-    tokenized_question = tokenize_mixed(query)
-    scores = bundle.bm25.get_scores(tokenized_question)
-    top_k = sorted(range(len(scores)), key=lambda i : scores[i], reverse=True)[:RETRIEVER_K]
-    for rank, idx in enumerate(top_k, 1):
-        rec = bundle.records[idx]
-        if rec.metadata.get("kind") == "module":
-            print(f"[BM25 rank {rank}] {rec.metadata['doc_id']}")
+def _sparse_retrieve(
+    query: str,
+    bm25: Any,
+    records: list[LCDocument],
+    k: int,
+) -> list[dict]:
+    tokens = tokenize_mixed(query)
+    scores = bm25.get_scores(tokens)
+    top = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:k]
     return [
-        {
-            "doc":bundle.records[idx],
-            "score":scores[idx]
-        }
-        for idx in top_k if scores[idx] > 0
+        {"doc": records[i], "score": scores[i]}
+        for i in top if scores[i] > 0
     ]
 
-def _dense_retrieve(query: str, bundle: RagIndex) -> list[dict]:
-    docs_with_scores = bundle.faiss_index.similarity_search_with_score(query, k=RETRIEVER_K)
-    for rank, (doc, _score) in enumerate(docs_with_scores, 1):
-        if doc.metadata.get("kind") == "module":
-            print(f"[FAISS rank {rank}] {doc.metadata['doc_id']}")
-    return [
-        {
-            "doc": doc,
-            "score": score
-        }
-        for doc, score in docs_with_scores 
-    ]
+def _dense_retrieve(
+    query: str,
+    faiss_index: Any,
+    records: list[LCDocument],
+    k: int,
+) -> list[dict]:
+    docs_with_scores = faiss_index.similarity_search_with_score(query, k=k)
+    by_id = {r.metadata["doc_id"]: r for r in records}
+    result = []
+    for doc, score in docs_with_scores:
+        doc_id = doc.metadata.get("doc_id")
+        canonical = by_id.get(doc_id, doc)
+        result.append({"doc": canonical, "score": score})
+    return result
 
 def _doc_key(doc: LCDocument):
     doc_id = doc.metadata.get("doc_id")
-    return doc_id if doc_id is not None else doc.page_content
+    return doc_id if isinstance(doc_id, str) and doc_id else None
 
 def reciprocal_rank_fusion(results: list[list[dict]]) -> list[dict]:
     doc_scores = {}
     for retriever_results in results:
         for rank, retriever_result in enumerate(retriever_results, start=1):
             doc_id = _doc_key(retriever_result["doc"])
+            if doc_id is None:
+                continue
             if doc_id not in doc_scores:
                 doc_scores[doc_id] = {
                     "doc": retriever_result["doc"],
                     "rrf_score": 0
                 }
             doc_scores[doc_id]["rrf_score"] += 1 / (rank+RRF_K)
-    
+
     fused = sorted(doc_scores.values(), key=lambda v : v["rrf_score"], reverse=True)
     return fused
 
@@ -330,27 +403,35 @@ def _symbol_candidate(record: LCDocument, score: float) -> dict[str, Any]:
     }
 
 def _hybrid_search(query: str, top_k: int, bundle: RagIndex) -> dict[str, Any]:
-    bm25_hits = _sparse_retrieve(query, bundle)
-    faiss_hits = _dense_retrieve(query, bundle)
-    rrf_resutl = reciprocal_rank_fusion([bm25_hits, faiss_hits])
-    selected = rrf_resutl[: max(top_k, 0)]
+    module_quota = max(1, top_k // 2)
+    symbol_quota = max(1, top_k - module_quota)
 
+    # module 侧
+    bm25_mod = _sparse_retrieve(query, bundle.bm25_module, bundle.module_records, PER_SIDE_K)
+    faiss_mod = _dense_retrieve(query, bundle.faiss_module, bundle.module_records, PER_SIDE_K)
+    rrf_mod = reciprocal_rank_fusion([bm25_mod, faiss_mod])
+
+    # symbol 侧
+    bm25_sym = _sparse_retrieve(query, bundle.bm25_symbol, bundle.symbol_records, PER_SIDE_K)
+    faiss_sym = _dense_retrieve(query, bundle.faiss_symbol, bundle.symbol_records, PER_SIDE_K)
+    rrf_sym = reciprocal_rank_fusion([bm25_sym, faiss_sym])
+
+    # 按配额取候选
     seen_modules: dict[str, dict[str, Any]] = {}
-    symbols: list[dict[str, Any]] = []
-    for item in selected:
-        kind = item["doc"].metadata.get("kind")
-        if kind == "module":
-            mp = item["doc"].metadata.get("module_path")
-            if not mp:
-                continue
-            candidate = _module_candidate(item["doc"], item["rrf_score"])
-            prev = seen_modules.get(mp)
-            if prev is None or candidate["score"] > prev["score"]:
-                seen_modules[mp] = candidate
-        elif kind == "symbol":
-            symbols.append(_symbol_candidate(item["doc"], item["rrf_score"]))
-
-    modules = sorted(seen_modules.values(), key=lambda x: x["score"], reverse=True)
+    for item in rrf_mod:
+        mp = item["doc"].metadata.get("module_path")
+        if not mp:
+            continue
+        if mp in seen_modules:
+            continue
+        seen_modules[mp] = _module_candidate(item["doc"], item["rrf_score"])
+        if len(seen_modules) >= module_quota:
+            break
+    modules = list(seen_modules.values())
+    symbols = [
+        _symbol_candidate(item["doc"], item["rrf_score"])
+        for item in rrf_sym[:symbol_quota]
+    ]
 
     return {
         "ok": True,
@@ -360,9 +441,10 @@ def _hybrid_search(query: str, top_k: int, bundle: RagIndex) -> dict[str, Any]:
             "symbols": symbols,
         },
         "retrieval": {
-            "bm25_hits": len(bm25_hits),
-            "faiss_hits": len(faiss_hits),
-            "fused_count": len(rrf_resutl),
+            "bm25_module_hits": len(bm25_mod),
+            "faiss_module_hits": len(faiss_mod),
+            "bm25_symbol_hits": len(bm25_sym),
+            "faiss_symbol_hits": len(faiss_sym),
             "module_candidates": len(modules),
             "symbol_candidates": len(symbols),
         },
@@ -371,17 +453,21 @@ def _hybrid_search(query: str, top_k: int, bundle: RagIndex) -> dict[str, Any]:
 @tool(
     description=(
         "Resolve a Chinese or English term to candidate modules and symbols "
-        "using hybrid BM25 + FAISS retrieval. "
+        "using split hybrid BM25 + FAISS retrieval. "
+        "Module and symbol indexes are searched separately, then merged by quota. "
         "Returns ranked candidates only, not an answer. "
         "Does not fuzzy-match or prefix-match."
     ),
     parameter_descriptions={
         "query": "Natural-language or identifier query, Chinese and English mixed is fine.",
-        "top_k": "Number of fused documents to keep after RRF. Default 10.",
+        "top_k": (
+            "Total candidate slots. Module quota is max(1, top_k // 2); "
+            "symbol quota is the remainder. Default 10."
+        ),
     },
 )
 def resolve_term(query: str, top_k: int = DEFAULT_TOP_K) -> dict[str, Any]:
-    """混合检索术语，返回模块和符号候选。"""
+    """分类型混合检索术语，按配额返回模块和符号候选。"""
     if _RAG_INDEX is None:
         return _index_unavailable()
     return _hybrid_search(query, top_k, _RAG_INDEX)
