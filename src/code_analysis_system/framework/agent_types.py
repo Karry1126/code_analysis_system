@@ -10,4 +10,4 @@ class ToolDefinition:
    name: str
    description: str
    parameters: dict[str, Any]
-   handler: ToolDefinition
+   handler: ToolHandler

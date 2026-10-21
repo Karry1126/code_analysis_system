@@ -7,6 +7,7 @@ from openai import (
     RateLimitError,
 )
 from icecream import ic
+from openai.types.chat import ChatCompletionMessage
 
 DEFAULT_API_URL = "https://api.deepseek.com"
 DEFAULT_MODEL_NAME = "deepseek-flash"
@@ -20,7 +21,7 @@ def call_llm(
     api_url: str = DEFAULT_API_URL,
     model_name: str = DEFAULT_MODEL_NAME,
     max_completion_tokens: int = DEFAULT_MAX_COMPLETION_TOKENS,
-) -> OpenAI.ChatCompletionMessageParam:
+) -> ChatCompletionMessage:
     """
     调用 DeepSeek Chat API，
 
