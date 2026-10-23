@@ -1,0 +1,27 @@
+# 评测 harness 全局配置
+model:
+  name: deepseek-flash          # 被测模型
+  judge_model: deepseek-v4-pro  # judge 模型（与被测不同，避免自评偏差）
+  api_url: https://api.deepseek.com
+  price_per_1k_input: 0.002     # 元(CNY)/1k input tokens（deepseek-flash：2 元/百万输入）
+  price_per_1k_output: 0.008    # 元(CNY)/1k output tokens（deepseek-flash：8 元/百万输出）
+
+run:
+  n_runs: 3                     # 默认每题运行次数（modify 场景强制 1）【临时：冒烟调快，出基线前改回 3】
+  max_loops: 10                 # 与 config.MAX_AGENT_LOOPS 一致
+  timeout_s: 300                # modify 子进程超时（秒）
+
+judge:
+  rubric_version: v1            # rubric 冻结版本，写入快照
+  retries: 2                    # judge 调用失败重试次数
+  kappa_threshold: 0.6          # judge 校准可用阈值
+
+runtime_impl: native            # native | langchain | langgraph（A/B 标注）
+
+paths:
+  repo: ../company_project/online   # 被测仓库（对应 .env 的 COMPANY_CODE_RELATIVE_PATH）
+  dataset_dir: eval/datasets/v1
+  data_dir: data
+  harness_dir: eval/harness
+  baselines_dir: eval/baselines
+  artifacts_dir: eval/artifacts

@@ -50,3 +50,7 @@ src/back
 demo_tools.py
 data
 doc
+
+# 评测 harness 执行产物（report/traces/snapshot/校准标注，均可重新生成）
+eval/baselines/
+eval/artifacts/

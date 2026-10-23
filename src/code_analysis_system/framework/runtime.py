@@ -1,6 +1,7 @@
 import json
-from typing import Any
-from icecream import ic
+import time
+from dataclasses import dataclass
+from typing import Any, Callable
 
 from ..config import MAX_TOOL_RESULT_CHARS
 from .message_store import MessageStore
@@ -55,6 +56,18 @@ def compact_tool_result(
         "match_count": compacted.get("match_count"),
         "path": compacted.get("path"),
     }
+
+
+@dataclass
+class RunOutcome:
+    """一次完整 Agent 任务的运行结果。"""
+
+    answer: str
+    status: str  # completed | max_loops_exceeded | error
+    steps: list[dict[str, Any]]
+    metrics: dict[str, Any]
+    error: str | None = None
+    exception: Exception | None = None
 
 
 class AgentRuntime:
@@ -186,76 +199,176 @@ class AgentRuntime:
 
     def run(self, goal: str, message_store: MessageStore) -> str:
         """
-        执行一轮完整的 Agent 任务。
+        执行一轮完整的 Agent 任务，返回最终答复字符串。
 
-        主循环：
-        - 组装消息
-        - 调模型
-        - 如果模型要调工具，就执行工具
-        - 把工具结果写回 messages 和 state
-        - 如果模型不再调工具，就把自然语言答复作为最终结果返回
+        与改造前行为一致：超循环抛 RuntimeError，异常向上传播。
+        内部调用 run_traced()，CLI 与 harness 共用同一控制流。
+        """
+        outcome = self.run_traced(goal, message_store)
+        if outcome.exception is not None:
+            raise outcome.exception
+        if outcome.status == "max_loops_exceeded":
+            raise RuntimeError("超过最大循环次数，任务仍未完成。可以把任务描述得更具体一点再重试。")
+        return outcome.answer
+
+    def run_traced(
+        self,
+        goal: str,
+        message_store: MessageStore,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
+    ) -> RunOutcome:
+        """
+        执行一轮完整的 Agent 任务，并采集执行轨迹与指标。
+
+        控制流与 run() 完全一致，只在关键节点记录事件，不改变调度决策。
+
+        - 超循环不再抛异常，而是 status="max_loops_exceeded" 返回；
+        - 调用链中任何异常被捕获，status="error" 返回，便于评测归因；
+        - on_event 每产生一个事件即回调一次，供评测 harness 实时落盘。
         """
         state = self.create_state(goal)
         tools_payload = self.tool_registry.build_tools_payload()
+        steps: list[dict[str, Any]] = []
+        metrics: dict[str, Any] = {
+            "llm_calls": 0,
+            "tool_calls": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_hit_tokens": 0,
+            "cache_miss_tokens": 0,
+            "llm_latency_ms": 0.0,
+            "tool_latency_ms": 0.0,
+        }
 
-        for loop_index in range(1, self.max_loops + 1):
-            state["loop_count"] = loop_index
-            request_messages = self.build_runtime_messages(message_store, state)
-            assistant_message = call_llm(
-                api_key=self.api_key,
-                messages=request_messages,
-                tools=tools_payload,
-            )
-            tool_calls = assistant_message.tool_calls
+        def emit(event: dict[str, Any]) -> None:
+            steps.append(event)
+            if on_event is not None:
+                on_event(event)
 
-            if tool_calls:
-                # 先把 assistant 的“工具调用意图”写进消息历史。
-                # 这样下一轮模型能看到自己上一步是如何决策的。
-                # ic(tool_calls)
-                
-                message_store.append(
+        try:
+            for loop_index in range(1, self.max_loops + 1):
+                state["loop_count"] = loop_index
+                request_messages = self.build_runtime_messages(message_store, state)
+                llm_call = call_llm(
+                    api_key=self.api_key,
+                    messages=request_messages,
+                    tools=tools_payload,
+                )
+                assistant_message = llm_call.message
+
+                metrics["llm_calls"] += 1
+                metrics["llm_latency_ms"] += llm_call.latency_ms
+                if llm_call.usage is not None:
+                    metrics["input_tokens"] += llm_call.usage.prompt_tokens
+                    metrics["output_tokens"] += llm_call.usage.completion_tokens
+                    metrics["cache_hit_tokens"] += llm_call.usage.prompt_cache_hit_tokens
+                    metrics["cache_miss_tokens"] += llm_call.usage.prompt_cache_miss_tokens
+
+                tool_calls = assistant_message.tool_calls
+
+                emit(
                     {
-                        "role": "assistant",
-                        "content": assistant_message.content,
-                        "tool_calls": tool_calls,
+                        "type": "llm_call",
+                        "loop": loop_index,
+                        "model": llm_call.model,
+                        "finish_reason": llm_call.finish_reason,
+                        "input_tokens": llm_call.usage.prompt_tokens if llm_call.usage else None,
+                        "output_tokens": llm_call.usage.completion_tokens if llm_call.usage else None,
+                        "cache_hit_tokens": llm_call.usage.prompt_cache_hit_tokens if llm_call.usage else None,
+                        "cache_miss_tokens": llm_call.usage.prompt_cache_miss_tokens if llm_call.usage else None,
+                        "latency_ms": llm_call.latency_ms,
+                        "tool_calls": [
+                            {"name": tc.function.name, "arguments": tc.function.arguments}
+                            for tc in (tool_calls or [])
+                        ],
                     }
                 )
 
-                for tool_call in tool_calls:
-                    tool_name = tool_call.function.name
-                    raw_arguments = tool_call.function.arguments
-                    print(f"\n[循环 {loop_index}] 模型选择工具：{tool_name} [工具参数] {raw_arguments}")
-
-                    executed_tool_name, tool_result = self.tool_registry.execute_tool_call(tool_call)
-                    compacted = compact_tool_result(tool_result)
-                    self.update_state_from_tool_result(
-                        state=state,
-                        tool_name=executed_tool_name,
-                        tool_result=compacted,
-                    )
-                    self.on_tool_result(
-                        state=state,
-                        tool_name=executed_tool_name,
-                        tool_result=compacted,
-                        message_store=message_store,
-                    )
-
-                    # 再把压缩后的工具结果回写成 role=tool 的消息。
+                if tool_calls:
+                    # 先把 assistant 的“工具调用意图”写进消息历史。
+                    # 这样下一轮模型能看到自己上一步是如何决策的。
                     message_store.append(
                         {
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "content": json.dumps(compacted, ensure_ascii=False),
+                            "role": "assistant",
+                            "content": assistant_message.content,
+                            "tool_calls": tool_calls,
                         }
                     )
 
-                continue
+                    for tool_call in tool_calls:
+                        tool_name = tool_call.function.name
+                        raw_arguments = tool_call.function.arguments
+                        print(f"\n[循环 {loop_index}] 模型选择工具：{tool_name} [工具参数] {raw_arguments}")
 
-            # 如果本轮没有 tool_calls，就把 assistant 的自然语言输出
-            # 当作“任务完成后的最终答复”。
-            final_answer = assistant_message.content or "任务已处理完成。"
-            state["completed"] = True
-            message_store.append({"role": "assistant", "content": final_answer})
-            return final_answer
+                        started = time.perf_counter()
+                        executed_tool_name, tool_result = self.tool_registry.execute_tool_call(tool_call)
+                        tool_latency_ms = (time.perf_counter() - started) * 1000
+                        compacted = compact_tool_result(tool_result)
+                        self.update_state_from_tool_result(
+                            state=state,
+                            tool_name=executed_tool_name,
+                            tool_result=compacted,
+                        )
+                        self.on_tool_result(
+                            state=state,
+                            tool_name=executed_tool_name,
+                            tool_result=compacted,
+                            message_store=message_store,
+                        )
 
-        raise RuntimeError("超过最大循环次数，任务仍未完成。可以把任务描述得更具体一点再重试。")
+                        # 再把压缩后的工具结果回写成 role=tool 的消息。
+                        message_store.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tool_call.id,
+                                "content": json.dumps(compacted, ensure_ascii=False),
+                            }
+                        )
+
+                        metrics["tool_calls"] += 1
+                        metrics["tool_latency_ms"] += tool_latency_ms
+                        emit(
+                            {
+                                "type": "tool_call",
+                                "loop": loop_index,
+                                "name": executed_tool_name,
+                                "arguments": raw_arguments,
+                                "ok": compacted.get("ok"),
+                                "truncated": compacted.get("truncated", False),
+                                "error": compacted.get("error"),
+                                "latency_ms": tool_latency_ms,
+                                "result": compacted,
+                            }
+                        )
+
+                    continue
+
+                # 如果本轮没有 tool_calls，就把 assistant 的自然语言输出
+                # 当作“任务完成后的最终答复”。
+                final_answer = assistant_message.content or "任务已处理完成。"
+                state["completed"] = True
+                message_store.append({"role": "assistant", "content": final_answer})
+                emit({"type": "final_answer", "loop": loop_index, "content": final_answer})
+                return RunOutcome(
+                    answer=final_answer,
+                    status="completed",
+                    steps=steps,
+                    metrics=metrics,
+                )
+
+            return RunOutcome(
+                answer="",
+                status="max_loops_exceeded",
+                steps=steps,
+                metrics=metrics,
+                error="超过最大循环次数，任务仍未完成。可以把任务描述得更具体一点再重试。",
+            )
+        except Exception as exc:
+            return RunOutcome(
+                answer="",
+                status="error",
+                steps=steps,
+                metrics=metrics,
+                error=f"{type(exc).__name__}: {exc}",
+                exception=exc,
+            )

@@ -1,26 +1,13 @@
-
-from .framework import MessageStore, ToolRegistry
-from .coding_runtime import CodingAgentRuntime
-from .config import MAX_HISTORY_INPUT_TOKENS, COMPANY_CODE_RELATIVE_PATH, get_api_key
-from .tools import register_coding_tools
-from .tools_index import register_index_tools
-from .tools_symbol import register_symbol_tools
-from .tools_references import register_reference_tools
-from .tools_rag import register_rag_tools
 import traceback
+
+from .agent_api import build_agent
+from .config import COMPANY_CODE_RELATIVE_PATH, MAX_HISTORY_INPUT_TOKENS, get_api_key
+from .framework import MessageStore
 
 
 def main() -> None:
     api_key = get_api_key()
-    registry = ToolRegistry()
-    register_coding_tools(registry)
-    register_index_tools(registry)
-    register_symbol_tools(registry)
-    register_reference_tools(registry)
-    register_rag_tools(registry)
-
-    # 这里直接复用 .framework 里的 ToolRegistry 和 MessageStore。
-    runtime = CodingAgentRuntime(api_key=api_key, tool_registry=registry)
+    runtime = build_agent(api_key=api_key)
     message_store = MessageStore(max_input_tokens=MAX_HISTORY_INPUT_TOKENS)
 
     print("Coding Agent Demo 已启动。输入 exit 或 quit 结束。")
