@@ -1,14 +1,15 @@
 import traceback
+import uuid
 
-from .agent_api import build_agent
+from .agent_api import build_langgraph_agent
 from .config import COMPANY_CODE_RELATIVE_PATH, MAX_HISTORY_INPUT_TOKENS, get_api_key
-from .framework import MessageStore
 
 
 def main() -> None:
     api_key = get_api_key()
-    runtime = build_agent(api_key=api_key)
-    message_store = MessageStore(max_input_tokens=MAX_HISTORY_INPUT_TOKENS)
+    runtime = build_langgraph_agent(api_key=api_key)
+    # 进程级 session_id 作为 thread_id，维持多轮记忆（替代 MessageStore）。
+    session_id = uuid.uuid4().hex
 
     print("Coding Agent Demo 已启动。输入 exit 或 quit 结束。")
     print(f"工作区目录：{COMPANY_CODE_RELATIVE_PATH}")
@@ -25,20 +26,20 @@ def main() -> None:
             print("对话结束。")
             break
 
-        # coding agent 同样使用 message history。
-        # 这意味着多轮任务约束、上文要求、前一次修改结论都能被保留下来。
-        message_store.append({"role": "user", "content": user_goal})
-
+        # LangGraph 的 InMemorySaver 以 thread_id 分区维护多轮记忆：
+        # 多轮任务约束、上文要求、前一次修改结论都被保留下来。
         try:
-            final_answer = runtime.run(goal=user_goal, message_store=message_store)
+            outcome = runtime.run(goal=user_goal, thread_id=session_id)
         except Exception as exc:
             traceback.print_exc()
             print(f"\n执行失败：{exc}")
-            if message_store.messages and message_store.messages[-1]["role"] == "user":
-                message_store.messages.pop()
             continue
 
-        print(f"\n助手：{final_answer}")
+        if outcome.status != "completed":
+            print(f"\n执行失败：{outcome.error or outcome.status}")
+            continue
+
+        print(f"\n助手：{outcome.answer}")
 
 
 if __name__ == "__main__":

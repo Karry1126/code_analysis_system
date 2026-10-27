@@ -3,7 +3,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from ..config import MAX_TOOL_RESULT_CHARS
+from ..config import MAX_TOOL_RESULT_CHARS, TOOL_RESULT_CHAR_LIMITS
 from .message_store import MessageStore
 from .tool_registry import ToolRegistry
 from .llm import call_llm
@@ -12,8 +12,14 @@ from .llm import call_llm
 def compact_tool_result(
     tool_result: dict[str, Any],
     max_chars: int = MAX_TOOL_RESULT_CHARS,
+    tool_name: str | None = None,
 ) -> dict[str, Any]:
-    """把过大的工具结果压到硬顶以内，再写入 MessageStore。"""
+    """把过大的工具结果压到硬顶以内，再写入 MessageStore。
+
+    tool_name 命中 TOOL_RESULT_CHAR_LIMITS 时用该工具自己的上限。
+    """
+    if tool_name:
+        max_chars = TOOL_RESULT_CHAR_LIMITS.get(tool_name, max_chars)
 
     def payload_size(payload: dict[str, Any]) -> int:
         return len(json.dumps(payload, ensure_ascii=False, default=str))
@@ -303,7 +309,7 @@ class AgentRuntime:
                         started = time.perf_counter()
                         executed_tool_name, tool_result = self.tool_registry.execute_tool_call(tool_call)
                         tool_latency_ms = (time.perf_counter() - started) * 1000
-                        compacted = compact_tool_result(tool_result)
+                        compacted = compact_tool_result(tool_result, tool_name=executed_tool_name)
                         self.update_state_from_tool_result(
                             state=state,
                             tool_name=executed_tool_name,

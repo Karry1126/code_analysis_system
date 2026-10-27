@@ -341,7 +341,7 @@ def build_indexes(records: list, repo_root: Path, module_paths: list[str]) -> tu
             module_symbols.setdefault(module_path, []).append({
                 "name": name,
                 "kind": row["kind"],
-                "file": row["file"],
+                "file": Path(row["file"]).name,
                 "line": row["line"],
             })
 

@@ -25,14 +25,18 @@ MAX_AGENT_LOOPS = 10
 # 单条 tool 结果写入 MessageStore 前的硬顶（字符）。
 # MessageStore.trim 不负责吞掉「当前这一块」超大结果。
 MAX_TOOL_RESULT_CHARS = 12_000
+# list_symbols_in_module 要带回一个模块的全部符号。
+# 文件名缩减后单模块大约数万字符，最大的约 6.4 万，所以单独抬高上限。
+MAX_LIST_SYMBOLS_RESULT_CHARS = 100_000
+TOOL_RESULT_CHAR_LIMITS = {
+    "list_symbols_in_module": MAX_LIST_SYMBOLS_RESULT_CHARS,
+}
 MAX_SEARCH_MATCHES = 50
 MAX_LIST_ITEMS = 80
 MAX_FILENAME_MATCHES = 40
 MAX_READ_LINES = 200
 READ_PREVIEW_LINES = 40
 RETRIEVE_TOP_K = 8
-RETRIEVE_TOP_K_MAX = 12
-SNIPPET_MAX_CHARS = 800
 
 def get_api_key() -> str:
     """读取 API Key。"""

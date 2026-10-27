@@ -46,6 +46,13 @@ def _index_unavailable() -> dict[str, Any]:
     return {"ok": False, "error": "index not available"}
 
 
+def _file_basename(value: Any) -> Any:
+    """模块符号列表只暴露文件名，完整路径交给 search_files_by_name。"""
+    if not isinstance(value, str) or not value:
+        return value
+    return Path(value).name
+
+
 @tool(
     description=(
         "Look up C/C++ symbol definitions by exact name. "
@@ -121,7 +128,7 @@ def list_symbols_in_module(module_path: str, kind: str | None = None) -> dict[st
                 {
                     "name": row.get("name"),
                     "kind": row_kind,
-                    "file": row.get("file"),
+                    "file": _file_basename(row.get("file")),
                     "line": row.get("line"),
                 }
             )

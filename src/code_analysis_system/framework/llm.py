@@ -13,6 +13,7 @@ from openai.types.chat import ChatCompletionMessage
 
 DEFAULT_API_URL = "https://api.deepseek.com"
 DEFAULT_MODEL_NAME = "deepseek-flash"
+# DEFAULT_MODEL_NAME = "deepseek-v4-pro"
 DEFAULT_MAX_COMPLETION_TOKENS = 3000
 
 
