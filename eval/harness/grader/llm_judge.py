@@ -1,6 +1,6 @@
 """LLM-as-a-judge：对开放答案的 task 层做语义判分。
 
-judge 使用与被测模型不同的模型（默认 deepseek-chat，被测为 deepseek-flash），
+judge 使用与被测模型（deepseek-flash）不同的模型（默认 deepseek-v4-pro），
 避免自评乐观偏差。输出结构化 JSON，score 0-5 归一化到 0-1。
 
 judge_fn 签名与 grader.__init__ 约定一致：

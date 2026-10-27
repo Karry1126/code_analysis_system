@@ -24,7 +24,8 @@ class Expected:
     # consult / bug 共用：必须覆盖到的模块与符号
     must_contain_modules: Optional[list[str]] = None
     must_contain_symbols: Optional[list[str]] = None
-    # consult / bug：答案正文必须出现的要点（由 mentions_covered 检查，忽略空白）
+    # consult / bug：答案正文必须出现的要点（由 mentions_covered 检查，忽略空白）。
+    # 一项里用 | 分隔等价说法，命中其中之一即可，例如「回收飞船|领奖」。
     must_mention: Optional[list[str]] = None
     # 轨迹必须调用的工具名（由 required_tools_called 检查）
     required_tools: Optional[list[str]] = None
@@ -36,7 +37,9 @@ class Expected:
     root_cause_file: Optional[str] = None
     root_cause_line: Optional[int] = None
     root_cause_symbol: Optional[str] = None
-    # modify：目标文件、关键改动要素、禁止改动的文件
+    # modify：目标文件、关键改动要素、禁止改动的文件。
+    # any_filename 为真时不限定新建文件的路径和文件名，只要写出文件即可。
+    any_filename: bool = False
     target_file: Optional[str] = None
     # 需全部写到的文件；设置后 only_target_file_modified 要求写全，且不得写集合外的文件
     target_files: Optional[list[str]] = None

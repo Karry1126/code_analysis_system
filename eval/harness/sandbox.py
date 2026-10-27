@@ -81,6 +81,7 @@ def run_modify_isolated(
     repo_copy: Path,
     *,
     n_runs: int = 1,
+    runtime_impl: str = "native",
 ) -> dict[str, Any]:
     """在子进程中把工作区指向副本，执行一次 Agent，返回结构化结果。
 
@@ -91,7 +92,7 @@ def run_modify_isolated(
         "import os, sys, json\n"
         f"os.environ['COMPANY_CODE_RELATIVE_PATH'] = {str(repo_copy)!r}\n"
         "from code_analysis_system.agent_api import run_agent\n"
-        f"result = run_agent({question!r}, n_runs={n_runs})[0]\n"
+        f"result = run_agent({question!r}, n_runs={n_runs}, runtime_impl={runtime_impl!r})[0]\n"
         "print(json.dumps(result, ensure_ascii=False))\n"
     )
     try:

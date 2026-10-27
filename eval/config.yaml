@@ -1,10 +1,10 @@
 # 评测 harness 全局配置
 model:
-  name: deepseek-flash          # 被测模型
+  name: deepseek-flash        # 被测模型
   judge_model: deepseek-v4-pro  # judge 模型（与被测不同，避免自评偏差）
   api_url: https://api.deepseek.com
-  price_per_1k_input: 0.002     # 元(CNY)/1k input tokens（deepseek-flash：2 元/百万输入）
-  price_per_1k_output: 0.008    # 元(CNY)/1k output tokens（deepseek-flash：8 元/百万输出）
+  price_per_1k_input: 0.002     # 元(CNY)/1k input tokens（待更新：deepseek-v4-pro 价格）
+  price_per_1k_output: 0.08    # 元(CNY)/1k output tokens（待更新：deepseek-v4-pro 价格）
 
 run:
   n_runs: 3                     # 默认每题运行次数（modify 场景强制 1）【临时：冒烟调快，出基线前改回 3】

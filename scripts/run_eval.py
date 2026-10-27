@@ -177,7 +177,9 @@ def main() -> int:
             with Sandbox(COMPANY_CODE_REPO_PATH) as sandbox:
                 sandbox.prepare()
                 started = time.perf_counter()
-                result = run_modify_isolated(case.question, sandbox.repo_copy)
+                result = run_modify_isolated(
+                    case.question, sandbox.repo_copy, runtime_impl=runtime_impl
+                )
                 duration_ms = (time.perf_counter() - started) * 1000
                 result["duration_ms"] = duration_ms
                 result["diff"] = sandbox.compute_diff(case.expected.target_file or "")
@@ -187,7 +189,12 @@ def main() -> int:
                 results_by_case[case.id] = [result]
                 sandbox.teardown()
         else:
-            results_by_case[case.id] = run_case(case, n_runs=n_runs, traces_dir=traces_dir)
+            results_by_case[case.id] = run_case(
+                case,
+                n_runs=n_runs,
+                traces_dir=traces_dir,
+                runtime_impl=runtime_impl,
+            )
         statuses = [r.get("status") for r in results_by_case[case.id]]
         print(f"[eval] {case.id} ({case.scenario}) -> {statuses}")
 

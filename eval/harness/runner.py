@@ -33,6 +33,7 @@ def run_case(
     n_runs: int | None = None,
     traces_dir: str | Path | None = None,
     sandbox=None,
+    runtime_impl: str = "native",
 ) -> list[dict[str, Any]]:
     """对单题跑 n 次，返回结构化结果列表，并可选落盘轨迹。
 
@@ -50,7 +51,7 @@ def run_case(
     results: list[dict[str, Any]] = []
     for i in range(1, n + 1):
         started = time.perf_counter()
-        single = run_agent(case.question, n_runs=1)[0]
+        single = run_agent(case.question, n_runs=1, runtime_impl=runtime_impl)[0]
         duration_ms = (time.perf_counter() - started) * 1000
         single["duration_ms"] = duration_ms
         results.append(single)
@@ -67,6 +68,7 @@ def run_all(
     n_runs: int | None = None,
     traces_dir: str | Path | None = None,
     sandbox=None,
+    runtime_impl: str = "native",
 ) -> dict[str, list[dict[str, Any]]]:
     """遍历全部用例，返回 {case_id: [run results]}。"""
     out: dict[str, list[dict[str, Any]]] = {}
@@ -76,5 +78,6 @@ def run_all(
             n_runs=n_runs,
             traces_dir=traces_dir,
             sandbox=sandbox,
+            runtime_impl=runtime_impl,
         )
     return out

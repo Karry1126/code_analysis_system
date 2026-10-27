@@ -81,7 +81,16 @@ def _coverage_ratio(needles: list[str] | None, haystack: str) -> tuple[int, int,
 # =============================================================================
 
 def _mention_in_answer(needle: str, answer: str) -> bool:
-    """答案中是否出现 needle。字符之间允许空白；以数字开头/结尾时不与相邻数字粘连。"""
+    """答案中是否出现 needle。字符之间允许空白；以数字开头/结尾时不与相邻数字粘连。
+
+    needle 含 | 时，左右两边是等价说法，命中其中之一即可。
+    """
+    if "|" in needle:
+        return any(
+            _mention_in_answer(part, answer)
+            for part in needle.split("|")
+            if part.strip()
+        )
     chars = [ch for ch in needle if not ch.isspace()]
     if not chars:
         return False
@@ -215,6 +224,17 @@ def only_target_file_modified(case: Case, result: dict[str, Any]) -> dict[str, A
         if path:
             touched.append(path)
 
+    if case.expected.any_filename:
+        forbidden_hits = [
+            p for p in touched for f in forbidden if f.replace("**", "") in p
+        ]
+        forbidden_hits = sorted(set(forbidden_hits))
+        if forbidden_hits:
+            return {"pass": False, "score": 0.0, "detail": f"改动了禁止文件：{forbidden_hits}"}
+        if not touched:
+            return {"pass": False, "score": 0.0, "detail": "未创建文件"}
+        return {"pass": True, "score": 1.0, "detail": f"已创建文件，文件名不限定：{touched}"}
+
     if not touched:
         if required:
             return {"pass": False, "score": 0.0, "detail": f"未改动指定文件：{required}"}
@@ -237,6 +257,16 @@ def only_target_file_modified(case: Case, result: dict[str, Any]) -> dict[str, A
     return {"pass": True, "score": 1.0, "detail": f"仅改动目标文件 {target}"}
 
 
+def _write_created_new_file(step: dict[str, Any]) -> bool:
+    """write_text_file 新建文件时，结果里 created 为 true。"""
+    if step.get("name") != "write_text_file":
+        return False
+    result = step.get("result") or {}
+    if isinstance(result, dict) and result.get("created") is True:
+        return True
+    return False
+
+
 def read_before_write(case: Case, result: dict[str, Any]) -> dict[str, Any]:
     saw_read = False
     for s in _tool_steps(result):
@@ -244,9 +274,11 @@ def read_before_write(case: Case, result: dict[str, Any]) -> dict[str, Any]:
         if name in READ_TOOLS:
             saw_read = True
         elif name in WRITE_TOOLS:
+            if _write_created_new_file(s):
+                continue
             if not saw_read:
-                return {"pass": False, "score": 0.0, "detail": "写文件前未先读目标窗口"}
-    return {"pass": True, "score": 1.0, "detail": "写文件前已读取目标窗口"}
+                return {"pass": False, "score": 0.0, "detail": "修改已有文件前未先读目标窗口"}
+    return {"pass": True, "score": 1.0, "detail": "修改已有文件前已读取；新建文件不要求先读"}
 
 
 def no_claimed_without_result(case: Case, result: dict[str, Any]) -> dict[str, Any]:

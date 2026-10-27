@@ -15,11 +15,31 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
 import json
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+
+def collect_deps() -> dict[str, str]:
+    """读取关键依赖的已安装版本，用于评测结果可归因。"""
+    names = [
+        "langchain",
+        "langchain-core",
+        "langchain-openai",
+        "langgraph",
+        "openai",
+        "pydantic",
+    ]
+    deps: dict[str, str] = {}
+    for name in names:
+        try:
+            deps[name] = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            deps[name] = "NOT_INSTALLED"
+    return deps
 
 
 def sha256_file(path: str | Path) -> str:
@@ -108,6 +128,7 @@ def capture_snapshot(
         },
         "indexes": hash_tree(data_dir),
         "harness": hash_tree(harness_dir),
+        "deps": collect_deps(),
         "config": extra_config or {},
     }
     return snapshot
@@ -160,6 +181,13 @@ def verify_snapshot(
     expected_tools = snapshot.get("tools", {}).get("schema_sha256")
     if expected_tools != current_tools_hash:
         issues.append(f"工具 schema 哈希不一致：快照={expected_tools}，当前={current_tools_hash}")
+
+    # 依赖版本：langchain/langgraph 等版本漂移会改变聚合 runtime 行为，须锁定。
+    current_deps = collect_deps()
+    for name, expected in snapshot.get("deps", {}).items():
+        current = current_deps.get(name)
+        if current != expected:
+            issues.append(f"依赖 {name} 版本不一致：快照={expected}，当前={current}")
 
     # harness：判分/驱动逻辑，改动会影响判分口径，须锁定。
     for relpath, expected in snapshot.get("harness", {}).items():

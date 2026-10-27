@@ -149,7 +149,7 @@ def validate(cases: list[Case]) -> None:
     - scenario 必须在四类内
     - retrieval 必须有 gold_list
     - bug 必须有 root_cause_file 或 root_cause_symbol
-    - modify 必须有 target_file 与 key_change_fields
+    - modify 必须有 key_change_fields；未声明 any_filename 时还必须有 target_file
     """
     seen: set[str] = set()
     for case in cases:
@@ -169,7 +169,7 @@ def validate(cases: list[Case]) -> None:
             raise ValueError(f"[{case.id}] bug 场景必须提供 root_cause_file 或 root_cause_symbol")
 
         if case.scenario == SCENARIO_MODIFY:
-            if not case.expected.target_file:
+            if not case.expected.any_filename and not case.expected.target_file:
                 raise ValueError(f"[{case.id}] modify 场景必须提供 expected.target_file")
             if not case.expected.key_change_fields:
                 raise ValueError(f"[{case.id}] modify 场景必须提供 expected.key_change_fields")
