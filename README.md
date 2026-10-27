@@ -82,7 +82,13 @@
 
 **结果**：LLM 能通过中文业务用语检索到对应英文模块，进一步读取代码并回答问题。
 
-**当前状态**：六轮迭代后，系统在四类任务上均能给出可追溯的答案。
+### 第七轮：迁移 LangGraph，原生并行工具调用，精简 state 与工具层
+
+用 `create_agent` + `AgentMiddleware` + `InMemorySaver` 重写 Runtime（新增 `langgraph_runtime.py`），替代手写 ReAct 循环；`RunOutcome` 六字段与工具 schema 契约保持不变。精简自定义 state：只保留 `goal` / `loop_count` / `loop_exceeded`，删除 `phase` / `last_retrieve` / `last_tool_name` / `shared_context` 等顺序流程控制字段，工具结果只写回 `messages`（`add_messages` 天然并发安全），从而原生支持一次调用多个工具，根治并行写标量 state 导致的 `InvalidUpdateError`。删除旧宽度定位工具 `retrieve_code` 及其专属辅助函数；system prompt 改为「术语解析 / 索引 / 文本」三类并明确标准定位流程与全量检索流程；每轮运行时消息从流程控制改为目标校准，防止长历史目标漂移。
+
+**结果**：native 与 langgraph 在同一 harness 下可比；并行工具调用不再报并发写冲突；`baseline_langgraph_v2` 均分约 0.751，与精简前 `v1`（0.757）基本持平，验证 state 精简不损失质量。
+
+**当前状态**：七轮迭代后，系统在四类任务上均能给出可追溯的答案，并支持原生并行工具调用。
 
 ## 核心设计
 
@@ -90,9 +96,9 @@
 
 ```
 Agent 层
-  coding_agent.py 注册工具，CodingAgentRuntime 循环
-  system prompt（coding_runtime.py）+ 每轮调度消息
-  循环上限 MAX_AGENT_LOOPS = 10
+  coding_agent.py 注册工具，LangGraphAgentRuntime（create_agent 聚合）
+  system prompt（coding_runtime.py）+ 每轮运行时校准消息
+  循环上限 MAX_AGENT_LOOPS = 10，InMemorySaver 以 thread_id 维持多轮记忆
         |
         v
 工具层
@@ -100,7 +106,7 @@ Agent 层
   索引：list_modules / query_include_graph
         find_symbol_definition / list_symbols_in_module
         find_symbol_references
-  文本：retrieve_code / search_text / search_files_by_name
+  文本：search_text / search_files_by_name
         read_text_file / list_files
   改文件：replace_text_in_file / write_text_file
         |
@@ -170,7 +176,6 @@ python -m code_analysis_system.coding_agent
 
 | 工具                     | 输入          | 输出       | 用途       |
 | ---------------------- | ----------- | -------- | -------- |
-| `retrieve_code`        | query       | 候选代码位置卡片 | 宽度定位     |
 | `search_text`          | query + 子目录 | 命中行      | 子目录内文本匹配 |
 | `search_files_by_name` | 文件名片段       | 命中文件     | 按文件名定位   |
 | `read_text_file`       | 文件路径 + 行号范围 | 行窗口内容    | 精读代码     |
@@ -252,7 +257,7 @@ scripts/
 | `evidence` | 证据充分性（模块/符号覆盖、无幻觉、根因定位、改动范围） | `rules` |
 | `trace` | 工具选择质量（是否用索引、是否读目标文件、是否稳定） | `rules` |
 
-- 主观层用与被测模型不同的 judge（`deepseek-v4-pro`）打分，避免自评乐观偏差。
+- 主观层用与被测模型（`deepseek-flash`）不同的 judge（`deepseek-v4-pro`）打分，避免自评乐观偏差。
 - 客观层用确定性规则，可复现、无随机性；`--no-judge` 时 task 层跳过、仅剩两层重新归一化（口径偏松，仅用于调试）。
 
 ### 环境快照与可归因
@@ -269,8 +274,8 @@ LLM judge 上线前用 Cohen's κ 与人工标注对齐：抽样作答 → 人�
 # 首次：创建快照并跑全量，产出基线
 python scripts/run_eval.py --run-id baseline_native_v0 --create-snapshot
 
-# 后续：校验快照一致性 + 对比已有基线（迁移到 LangChain 后）
-python scripts/run_eval.py --run-id langchain_v0 --runtime-impl langchain \
+# 后续：校验快照一致性 + 对比已有基线（迁移到 LangGraph 后）
+python scripts/run_eval.py --run-id baseline_langgraph_v2 --runtime-impl langgraph \
     --snapshot eval/baselines/baseline_native_v0/snapshot.json \
     --compare eval/baselines/baseline_native_v0/report.json
 
@@ -286,19 +291,22 @@ python scripts/run_calibration.py evaluate \
     --out eval/artifacts/calibration_report.json
 ```
 
-> 当前基线（`baseline_native_v0`）为自动化跑分产物：总体均分约 0.746、稳定率 0.897、估算成本约 2.84 元；`report.md` 中的 P50/P95 为端到端与单次 LLM 调用的百分位延迟。该分数由 harness 三层判分自动产出，与上文「11/11 通过」的人工验收口径不同（后者是规则通过性，前者是加权质量分）。
+> 当前基线均为自动化跑分产物，统一由 harness 三层判分自动产出（加权质量分，与上文「11/11 通过」的规则通过性口径不同）：
+> - `baseline_native_v0`：原生 `AgentRuntime`，总体均分约 0.746、稳定率 0.897、估算成本约 2.84 元。
+> - `baseline_langgraph_v2`：`LangGraphAgentRuntime`（并行工具调用 + 精简 state），总体均分约 0.751、稳定率 0.931、估算成本约 7.29 元。
+> 迁移到 LangGraph 后均分与 native 持平，稳定率更高；成本上升源于 `create_agent` 每轮注入 system prompt 与工具 schema 的输入开销，后续可优化。
 
 ## 优化方向
 
 1. 评测体系扩充：当前 11 题样本有限，按分层抽样扩到每场景 ≥5 条、补全 holdout，并接入 CI 自动化回归
 2. 提升RAG质量：引入重排序，模型候选：BAAI/bge-reranker-v2-m3，增加query与doc的相关性
 3. 证据呈现优化：让工具的返回自带代码片段，让LLM的答案自带file:line引用
-4. 会话记忆：如果有长对话的需求，引入message的会话记忆
+4. 长期记忆持久化：当前 InMemorySaver 为进程内记忆，重启即失；如需跨进程/重启，可换持久化 checkpointer
 5. 索引热更机制：自动化热更索引，如监控文件改动或定时执行
 
 ## 已知限制
-- 回归集当前为 10 道自建用例，样本量有限，不代表生产准确率。
+- 回归集当前为 11 道自建用例，样本量有限，不代表生产准确率。
 - 主要面向 C++/Python 活动服仓库，复杂跨文件重构和大规模仓库性能仍需验证。
-- 当前为离线索引 + CLI/Agent 循环，尚未接入权限、多租户、长期记忆和生产监控。
+- 会话记忆为进程内（InMemorySaver），重启即失；尚未接入权限、多租户、持久化记忆和生产监控。
 - 索引为离线构建，尚未实现热更新。
 
